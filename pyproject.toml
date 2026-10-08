@@ -1,7 +1,7 @@
 [project]
 name = "agent-taskboard"
-version = "0.1.0"
-description = "Scaffold for a local read-only task board. Task storage is not implemented in this version."
+version = "0.2.0"
+description = "Local read-only task board. An AI writes rows over HTTP."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "httpx>=0.27",
+    "httpx2>=2.13",
     "pytest>=8",
     "ruff>=0.8",
 ]
@@ -28,10 +29,15 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_taskboard = ["py.typed", "static/index.html"]
+agent_taskboard = ["py.typed", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration and not browser'"
+markers = [
+    "integration: isolated localhost server",
+    "browser: playwright screenshot",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -40,3 +46,4 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]

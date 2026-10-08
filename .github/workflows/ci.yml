@@ -25,4 +25,4 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Test
-        run: uv run python -m pytest tests/ -v
+        run: uv run python -m pytest -m "not browser" -o addopts= -v

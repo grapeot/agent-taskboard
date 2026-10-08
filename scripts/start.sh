@@ -9,11 +9,5 @@ if [ ! -d .venv ]; then
   echo "missing .venv; create it with: uv venv --python 3.12" >&2
   exit 1
 fi
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  . ./.env
-  set +a
-fi
 . .venv/bin/activate
 exec python -m agent_taskboard

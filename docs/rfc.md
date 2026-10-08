@@ -1,87 +1,307 @@
-# Request for Comments: System Design and Contract
+# RFC: agent-taskboard Architecture and Protocols
 
-## 1. System Roles and Scope
+## Status
+Accepted
 
-agent-taskboard provides one board for delivery goals. An AI writes the rows. A person reads them.
+## 1. Context and Goals
+`agent-taskboard` provides visibility into asynchronous AI agent activities without introducing execution coupling. Agents push status updates over HTTP. Human viewers consume a static one-page dashboard. The system deliberately excludes control mechanisms: there are no task queues, scheduling loops, worker subprocess managers, or approval buttons.
 
-- **Producer**: AI agents (such as Codex, Claude Code, Cursor, or OpenCode) sending typed HTTP updates.
-- **Consumer**: A read-only web page accessed by a human operator in a browser.
+The primary goals are:
+- Provide a lightweight HTTP daemon started simply as `python -m agent_taskboard`.
+- Store tasks and execution reports reliably in SQLite with optimistic concurrency control.
+- Ensure idempotency for network retries and agent restarts.
+- Serve a fast, responsive, zero-token web dashboard that displays screen states and diagnostic badges.
 
-*Scaffold status*: This checkout is a scaffold. It provides an importable Python package `agent_taskboard`. `GET /health` is live and returns phase `scaffold`. `GET /` serves a static placeholder page. The typed task routes are published in the OpenAPI schema but return 501 Not Implemented. This build does not persist tasks, stream events, or resolve artifacts.
+## 2. System Architecture
 
-## 2. Storage Architecture
+```
++-----------------------------------------------------------+
+|                        Client Layer                       |
+|                                                           |
+|   +-----------------------+     +---------------------+   |
+|   |  AI Agent (Producer)  |     |   Browser (Viewer)  |   |
+|   |  HTTP Write Requests  |     |   HTML5 + SSE Read  |   |
+|   +-----------+-----------+     +----------+----------+   |
++---------------|----------------------------|--------------+
+                | Bearer Token               | Unauthenticated
+                v                            v
++-----------------------------------------------------------+
+|                    HTTP Service Layer                     |
+|                                                           |
+|   - FastAPI / Starlette routing                           |
+|   - Authentication Middleware (Bearer check on writes)    |
+|   - CORS Middleware (explicit http/https origins only)    |
+|   - SSE Hub (broadcasts change hints on write)            |
+|   - Static File Server (serves one-page dashboard)        |
++-----------------------------+-----------------------------+
+                              |
+                              v
++-----------------------------------------------------------+
+|                       Storage Layer                       |
+|                                                           |
+|   - SQLite (default: ./data/agent_taskboard.sqlite3)      |
+|   - Tables: tasks, attempts, reports                      |
+|   - WAL mode enabled for concurrent read/write            |
++-----------------------------------------------------------+
+```
 
-- **Current Build**: No task store. Nothing is kept in memory or on disk. No database file is opened or created.
-- **Later Phase**: A resident FastAPI service with Pydantic 2 models and a SQLite database located at `AGENT_TASKBOARD_DB_PATH` (`./data/agent_taskboard.sqlite3`). It is not an in-memory ephemeral store and not a task CLI with subcommands. The service starts via `python -m agent_taskboard` without command-line arguments.
+### 2.1 Process Execution
+The service runs directly with Python:
+```bash
+python -m agent_taskboard
+```
+A process launcher or supervisor can start this command using the checkout directory as its working directory. There is no CLI for task creation or mutation.
 
-## 3. Task Identity and Row Structure
+### 2.2 Configuration and Secret Loading
+Configuration resolution follows these rules:
+1. Environment variables set in the host process take precedence.
+2. If `AGENT_TASKBOARD_ENV_FILE` is defined, the service reads that file; otherwise, it reads `.env` in the working directory.
+3. The service parses the environment file directly and populates only variables not already present in the environment.
+4. Token Validation: The service inspects `AGENT_TASKBOARD_TOKEN`. If the token is empty, missing, or equals `replace-with-a-long-random-token`, the process exits immediately with an error log.
+5. Tokens are never placed on command-line arguments and are never delivered to the web browser.
 
-- **One Row per Delivery Goal**: A row represents a single delivery objective identified by a task identifier such as `job_example_alpha`. It can belong to a group such as `group_example` and involve users such as Alice (`alice@example.com`) and Bob (`bob@example.net`).
-- **Folding Attempts**: Retries, revisions, or agent handoffs keep the same task identifier and fold attempts (for example, `attempt_example_1`) underneath the parent goal.
-- **Session Separation**: Agent session identifiers (for example `opencode://session/ses_example`) are distinct from task identifiers.
+### 2.3 Network Interfaces and CORS
+- Default host and port: `127.0.0.1` and `8765`.
+- Setting `AGENT_TASKBOARD_HOST=0.0.0.0` and optionally `AGENT_TASKBOARD_PORT=8789` allows access over a trusted local area network or Tailscale interface. This is a local hosting choice, not a public deployment.
+- `AGENT_TASKBOARD_CORS_ORIGINS` defaults to an empty list. When set, it must contain a comma-separated list of explicit `http` or `https` origins (e.g., `http://localhost:3000,https://example.com`). Wildcard `*` is explicitly disallowed and rejected during startup.
 
-## 4. Mutation Contract and Conflict Resolution
+## 3. Storage and Data Model
 
-*Note: The behaviors below describe the contract that the later phase will honor. This scaffold build does not execute these operations; endpoints return 501.*
+The SQLite database file defaults to `./data/agent_taskboard.sqlite3`.
 
-- **PUT /tasks/{task_id}**:
-  - Registers a task goal.
-  - If a client repeats the exact same body for an existing task, the call succeeds idempotently and does not overwrite subsequent updates.
-  - If a client sends a different body for an existing task identifier, the server returns HTTP 409 Conflict.
-  - *Scaffold status: Not executed; returns 501.*
-- **PATCH /tasks/{task_id}**:
-  - Updates progress, state, or metadata.
-  - The request payload carries `expected_revision` and `report_key` (such as `report_example_1`).
-  - Idempotency check: If `report_key` matches an already recorded report, the server returns the previous receipt immediately without evaluating revision conflicts.
-  - Revision check: If `report_key` is new and `expected_revision` does not match the database state, the server returns HTTP 409 Conflict.
-  - Late attempt handling: A late attempt returning after a subsequent attempt has started receives HTTP 409 and is prevented from closing or overwriting the newer attempt.
-  - *Scaffold status: Not executed; returns 501.*
+### 3.1 Relational Schema
 
-## 5. State Projection and Display Rules
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    task TEXT NOT NULL,
+    expected_deliverable TEXT NOT NULL,
+    group_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_id TEXT,
+    revision INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_reported_at TEXT NOT NULL,
+    result_refs_json TEXT NOT NULL,
+    owner_session_ref TEXT
+);
 
-The consumer interface applies strict projection rules:
+CREATE TABLE IF NOT EXISTS attempts (
+    task_id TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    active INTEGER NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id, attempt_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+);
 
-- **Three Screen States Only**:
-  - `Not started`
-  - `In progress`
-  - `Done` (Done means accepted)
-- **Status Badges**:
-  - `Waiting for review`, `Failed`, `Blocked`, and `Stale` are badges displayed on top of the last known screen state.
-  - Badges do not create a fourth screen state and are not equivalent to `Done`.
-  - Idle is not a status. A quiet process is not acceptance and is not failure.
-- **Timestamp Display**:
-  - The interface displays the last reported timestamp.
-  - A long gap between updates indicates that the task has not been updated. It does not indicate that the task is completed or failed.
-- **Read-Only Interface**:
-  - The dashboard contains no run, stop, retry, or approve buttons.
-  - The service does not start, stop, or kill agent processes.
+CREATE TABLE IF NOT EXISTS reports (
+    task_id TEXT NOT NULL,
+    report_key TEXT NOT NULL,
+    receipt_payload TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (task_id, report_key),
+    FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+);
 
-## 6. Links and Artifact Handling
+CREATE INDEX IF NOT EXISTS idx_tasks_group ON tasks(group_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 
-- **Allowed Links**: Links associated with results or sessions must use `http`, `https`, or `opencode://` schemes (such as `https://example.com/results/alpha` or `opencode://session/ses_example`).
-- **Rejected Schemes**: URIs using `javascript`, `data`, or `file` are rejected with HTTP 422.
-- **Local Files and Artifacts**: Local file references are represented as plain text paths (such as `notes/example.md`) or resolved as opaque artifact identifiers.
-- **GET /artifacts/{artifact_id}**:
-  - In the later phase, this endpoint resolves only opaque identifiers within roots defined by `AGENT_TASKBOARD_ALLOWED_ARTIFACT_ROOTS`.
-  - Raw filesystem paths are never accepted.
-  - The service does not provide an open directory browser.
-  - *Scaffold status: Not executed; returns 501.*
+The statements above are a sketch of the tables. Request and response fields are defined by `/openapi.json`, not by this sketch.
+```
 
-## 7. Event Notifications
+### 3.2 State Derivation Rules
 
-- **GET /events**:
-  - In the later phase, this endpoint will provide Server-Sent Events (SSE) acting as change hints rather than an event replay log.
-  - When the web client receives a change hint, it re-fetches the current task snapshot via `GET /tasks`.
-  - *Scaffold status: Not executed; returns 501.*
+The database stores statuses `planned`, `in_progress`, `accepted`, and `cancelled`. The API computes screen states and badges. `planned` is Not started. `accepted` is Done.
 
-## 8. Network and Authorization Policy
+1. **Screen States**:
+   - stored `planned` maps to Not started
+   - stored `in_progress` maps to In progress
+   - stored `accepted` maps to Done. Done is the screen state, not a stored status.
 
-- **Default Network Binding**: Binds to `127.0.0.1` on port `8765`.
-- **Trusted LAN / Tailscale**: An operator may configure `AGENT_TASKBOARD_HOST=0.0.0.0` for access across a private LAN or Tailscale. Exposing the read-only dashboard to a trusted local network is a conscious operational choice, not a public internet default.
-- **CORS Policy**: `AGENT_TASKBOARD_CORS_ORIGINS` defaults to empty, preventing external origins from querying the API. Wildcard origins (`*`) must not be configured.
-- **Authentication**:
-  - Write requests (`PUT`, `PATCH`) must supply `Authorization: Bearer <AGENT_TASKBOARD_TOKEN>`.
-  - Read routes do not use the write token. The page cannot call a token-gated read without embedding the secret.
-  - In this scaffold, valid write tokens yield 501, while missing or incorrect write tokens yield 401. Reads yield 501 with no token.
-  - The web page must not contain the write token.
-  - The service does not send emails in this build, and future notification systems must not include the write token.
+2. **Diagnostic Badges**:
+   - `Waiting for review`: Reported when work is submitted for review but not yet stored as `accepted`.
+   - `Failed`: Reported when an attempt explicitly records a failure.
+   - `Blocked`: Reported when work is held on an external blocker.
+   - `Not updated`: Evaluated when stored status is not `accepted` and the report is older than `AGENT_TASKBOARD_STALE_AFTER_SECONDS` (default: 1800s).
+   - `Unknown`: Fallback when status reporting is inconsistent.
+
+3. **Invariants**:
+   - A badge is not `Done`.
+   - `Idle` is not a status.
+   - A quiet process is not acceptance and is not failure.
+   - Accepted rows never receive the `Not updated` badge regardless of how long ago they finished.
+   - Cancelled tasks are excluded from `not_started`, `in_progress`, and `done` summary tallies.
+
+## 4. Concurrency and Idempotency Protocols
+
+### 4.1 Report Idempotency via `report_key`
+Every progress patch requires a client-generated `report_key` (such as `report_example_1`).
+- When a `PATCH` arrives, the server checks the `reports` table for `(task_id, report_key)`.
+- If a match exists and the payload hash is the same, the server returns that receipt with its original status, including 404 and 409, before revision and attempt checks.
+- A different payload for the same task and key returns 409 `idempotency_conflict` and does not change the row. Send a new report_key.
+- A migrated receipt with an empty payload hash cannot be replayed. Reuse returns 409 `legacy_receipt_unverifiable`. The old receipt and the task row stay. Send a new report_key.
+
+### 4.2 Optimistic Locking via `expected_revision`
+- Each row carries an integer `revision`, starting at 1 upon registration.
+- A `PATCH` request must provide `expected_revision`.
+- If `expected_revision != tasks.revision`, the server returns `409 Conflict` containing the current row representation. The caller must fetch or inspect the current state before retrying with an updated revision.
+
+### 4.3 Active Attempt Lifecycle
+- Attempt identifiers look like `attempt_example_1`.
+- When an attempt is active, incoming `PATCH` requests must supply matching `attempt_id`.
+- If an agent transitions work to a new attempt (e.g., following a worker handoff or retry), supplying a new `attempt_id` alongside the current `expected_revision` sets it as the new active attempt.
+- Submitting an update for an attempt that is no longer active returns `409 Conflict` with error code `stale_attempt`.
+
+## 5. HTTP Interface Specification
+
+### 5.1 Endpoints Summary
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| `PUT` | `/tasks/{task_id}` | Bearer | Register task row |
+| `PATCH` | `/tasks/{task_id}` | Bearer | Update task status or attempt |
+| `GET` | `/tasks/{task_id}` | None | Retrieve single task record |
+| `GET` | `/tasks` | None | List tasks and counts |
+| `GET` | `/events` | None | Server-sent event change hints |
+| `GET` | `/openapi.json` | None | OpenAPI JSON schema |
+| `GET` | `/docs` | None | Interactive Swagger documentation |
+| `GET` | `/` | None | Static web dashboard |
+
+### 5.2 Registration: `PUT /tasks/{task_id}`
+
+Example: `PUT /tasks/job_example_alpha`
+
+```json
+{
+  "title": "Example notes for Alice",
+  "task": "Prepare a short example note. Do not include private material.",
+  "expected_deliverable": "A markdown note whose example link is https://example.com/results/alpha.",
+  "group_id": "group_example"
+}
+```
+
+Response Behaviors:
+- **New Task**: Returns `201 Created` with the newly formed task row.
+- **Idempotent Resubmission**: If the request body exactly matches the registration fields of the existing row, returns `200 OK` with the current row (including any later attempt or status edits). It does not reset status.
+- **Conflict**: If the request body differs from the existing row, returns `409 Conflict` with error code `conflict`. The existing row remains untouched.
+
+### 5.3 Progress Update: `PATCH /tasks/{task_id}`
+
+Example: `PATCH /tasks/job_example_alpha`
+
+```json
+{
+  "expected_revision": 1,
+  "report_key": "report_example_1",
+  "attempt_id": "attempt_example_1",
+  "status": "in_progress",
+  "badges": ["waiting_review"],
+  "result_refs": [{"kind": "copy_path", "value": "notes/example.md", "label": "Example note"}],
+  "owner_session_ref": "opencode://session/ses_example"
+}
+```
+
+Response Behaviors:
+- Increments `revision` by 1.
+- Records `report_key` and receipt payload in `reports`.
+- Returns `200 OK` with the updated task row.
+- If `expected_revision` does not match, returns `409 Conflict`.
+- If `attempt_id` is stale, returns `409 Conflict` (`code: "stale_attempt"`).
+
+### 5.4 List Tasks: `GET /tasks`
+
+Query Parameters:
+- `group_id`: String filter.
+- `status`: Stored status filter (`planned`, `in_progress`, `accepted`, `cancelled`).
+- `ui_state`: Screen-state filter (`not_started`, `in_progress`, `done`, `excluded`).
+- `q`: Search substring across title, task, expected deliverable, and group.
+- `include_cancelled`: Boolean (default `false`). When `false`, cancelled rows are omitted from the task array.
+
+Response Payload:
+```json
+{
+  "count": 1,
+  "counts": {"not_started": 0, "in_progress": 1, "done": 0},
+  "tasks": [
+    {
+      "task_id": "job_example_alpha",
+      "title": "Example notes for Alice",
+      "task": "Prepare a short example note. Do not include private material.",
+      "expected_deliverable": "A markdown note whose example link is https://example.com/results/alpha.",
+      "group_id": "group_example",
+      "status": "in_progress",
+      "ui_state": "in_progress",
+      "badges": ["waiting_review"],
+      "not_updated": false,
+      "attempt_id": "attempt_example_1",
+      "revision": 2,
+      "created_at": "2026-10-07T22:00:00Z",
+      "updated_at": "2026-10-07T22:05:00Z",
+      "last_reported_at": "2026-10-07T22:05:00Z",
+      "result_refs": [{"kind": "copy_path", "value": "notes/example.md", "label": "Example note"}],
+      "evidence_refs": [],
+      "owner_session_ref": "opencode://session/ses_example",
+      "recent_events": []
+    }
+  ],
+  "server_time": "2026-10-07T22:05:00Z"
+}
+```
+
+Counts sit under `counts`. Cancelled rows are outside those three numbers. They are omitted from `tasks` unless `include_cancelled` is true, in which case `count` includes them and the three counts still do not.
+
+### 5.5 Change Notification: `GET /events`
+- Implemented via Server-Sent Events (`text/event-stream`).
+- Whenever a `PUT` or `PATCH` mutates state, the server broadcasts a lightweight notification:
+  ```
+  event: change
+  data: {"task_id": "job_example_alpha", "revision": 2, "event_id": "evt_example_1"}
+  ```
+- The event is a change hint, not an event log. The browser uses this hint to trigger a fresh `GET /tasks`. If hints are missed during disconnections, the dashboard re-fetches upon reconnect.
+
+### 5.6 Error Handling and Response Envelopes
+All error responses adhere to the standard envelope:
+```json
+{
+  "code": "validation_error",
+    "message": "The request body does not match the typed body.",
+    "fields": ["title"]
+}
+```
+
+Standard codes:
+- `401 unauthorized`: Missing or invalid Bearer token.
+- `404 not_found`: Task row does not exist.
+- `409 conflict` or `stale_attempt`: Concurrency violation or stale attempt. Returns current row state.
+- `422 validation_error`: Payload failed validation. Does not echo invalid submitted values back in the response.
+
+## 6. Web Dashboard Architecture
+
+### 6.1 Layout and Rendering
+- The dashboard is delivered as a single self-contained HTML document.
+- Layout sections:
+  1. Header with service title, total counts, and offline status indicator.
+  2. Search and filter toolbar.
+  3. Pinned Group section at the top.
+  4. Open Tasks section displaying all non-accepted rows.
+  5. Collapsible `Done` section displaying accepted rows.
+- Deliverable Links vs Paths:
+  - Valid URLs (`http://`, `https://`, `opencode://`) are rendered as clickable anchors.
+  - Local filesystem paths (e.g., `notes/example.md`) are rendered with a copy button to place text onto the clipboard.
+- Text Encoding: UTF-8 encoding is strictly enforced so that Chinese titles, goals, and summaries render intact.
+- Responsive design rules ensure readable card presentation on narrow mobile viewports.
+
+### 6.2 Offline Resilience
+- The browser tracks connection state using window online/offline events and EventSource status.
+- When disconnected, an offline badge appears in the header.
+- The dashboard preserves the last retrieved data snapshot and avoids marking tasks failed.
+- Once connectivity is restored, the client fetches `GET /tasks` to synchronize state.
+
+### 6.3 Security Boundary
+- The dashboard contains no secret tokens and makes no authenticated calls.
+- The service does not download files, and no artifact route is provided. Deliverable paths are informational references only.
