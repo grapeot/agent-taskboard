@@ -1,99 +1,163 @@
 # agent-taskboard
 
-agent-taskboard is a small local HTTP service and read-only task board. An AI writes task rows over HTTP. A person reads them in a browser.
+agent-taskboard provides a single-page task board for human oversight of autonomous AI work. An AI writes task rows over HTTP. A person reads the board in a web browser. The page has no run, stop, retry, or approve buttons. The service does not schedule or stop agents. There is no task CLI.
 
-The intended public repository is https://github.com/grapeot/agent-taskboard. License: MIT. Default branch: master.
+Public repository: https://github.com/grapeot/agent-taskboard
+License: MIT
+Default branch: master
+Import name: agent_taskboard
 
-## What This Checkout Actually Does
+## What the Service Does
 
-This repository checkout is an initial scaffold.
+- Exposes an HTTP API for registering and updating task rows.
+- Serves a self-contained one-page web dashboard.
+- Organizes work by delivery goal rather than execution steps.
+- Tracks attempts under each row without constructing a task hierarchy.
+- Sends live change hints to connected browsers via server-sent events.
 
-- The Python package can be imported as `agent_taskboard`.
-- `GET /health` is live and returns status 200. The JSON includes `"phase": "scaffold"`.
-- `GET /` serves a static, read-only HTML placeholder page.
-- Typed task routes are published in the OpenAPI schema at `http://127.0.0.1:8765/openapi.json` and `http://127.0.0.1:8765/docs`.
-- `PUT` and `PATCH` need a bearer token. A valid token gets HTTP 501. A missing or wrong token gets HTTP 401. `GET /tasks`, `GET /events`, and `GET /artifacts/{artifact_id}` return 501 and do not use the write token.
-- This build does not store tasks, stream events, or resolve files.
+## Data Model
 
-## What Is Not Built Yet
+- **Task row**: Represents one delivery goal. The identifier looks like `job_example_alpha` and stays the same across retries and handoffs.
+- **Attempts**: Each run or execution cycle produces an attempt identifier such as `attempt_example_1`, folded under the corresponding task row.
+- **Grouping**: `group_example` is a pin label, not a badge filter and not a parent task.
+- **Session links**: Reference links such as `opencode://session/ses_example` point to agent transcripts or sessions. Session links are not task ids.
 
-The following capabilities are reserved for a later implementation phase and are not operational in this scaffold:
+## Screen States and Badges
 
-- Task persistence to a SQLite database.
-- Live Server-Sent Events (SSE) change hints via `GET /events`.
-- Opaque artifact retrieval via `GET /artifacts/{artifact_id}`.
-- Conflict detection and report key deduplication for `PUT` and `PATCH`.
+The board displays three screen states:
+- `Not started`
+- `In progress`
+- `Done` (`Done` means accepted)
 
-In this build, `GET /tasks`, `PUT /tasks/{task_id}`, `PATCH /tasks/{task_id}`, `GET /events`, and `GET /artifacts/{artifact_id}` return HTTP 501 without storing or streaming anything.
+Rows may also carry diagnostic badges:
+- `Waiting for review`
+- `Failed`
+- `Blocked`
+- `Not updated`
+- `Unknown`
 
-## Service Architecture and Rules
+Rules governing states and badges:
+- A badge is not `Done`.
+- `Idle` is not a status.
+- A quiet process is not acceptance and is not failure.
+- Cancelled rows are excluded from open task counts (`not_started`, `in_progress`, `done`).
+- When a row is not accepted and receives no report within `AGENT_TASKBOARD_STALE_AFTER_SECONDS` (default 1800 seconds), the board displays `Not updated`.
+- Accepted rows never gain the `Not updated` badge when a report is old.
 
-The later implementation will run as a resident FastAPI service using Pydantic 2 models and a SQLite file (`./data/agent_taskboard.sqlite3`). It is not an in-memory toy and it is not a task CLI with subcommands. The start command is `python -m agent_taskboard` with no arguments.
+## Web Dashboard
 
-- **Task Identity**: One row represents one delivery goal. Retries or agent handoffs keep the same task identifier (such as `job_example_alpha`) and fold the attempt (such as `attempt_example_1`) underneath. Session identifiers are distinct from task identifiers.
-- **Read-Only Dashboard**: The page is strictly read-only. It has no run, stop, retry, or approve buttons. The service does not schedule, run, or kill agents.
-- **Three Screen States Only**: `Not started`, `In progress`, and `Done`. Done means accepted.
-- **Status Badges**: `Waiting for review`, `Failed`, `Blocked`, and `Stale` are badges displayed on top of the last known screen state. They are not a fourth screen state and they are not `Done`.
-- **Process Activity**: Idle is not a status. A quiet process is not acceptance and is not failure.
-- **Reporting Time**: The dashboard displays the last reported timestamp. A long gap means not updated; it does not mean done or failed.
-- **Links and References**: Allowed URL schemes for result links are `http`, `https`, and `opencode://` (such as `https://example.com/results/alpha` and `opencode://session/ses_example`). The schemes `javascript`, `data`, and `file` are rejected. Local files are represented as plain text to copy or, later, as opaque artifact identifiers under configured roots (such as `notes/example.md`). There is no open directory browser.
-- **Authentication**: Write calls require an `Authorization: Bearer <token>` header matching the server token. The HTML page must not contain that token. This build does not send email, and later notifications must not include the token.
+The one-page board provides:
+- Pinned group view at the top of the page.
+- Other open rows visible on the same page.
+- Folded section for `Done` tasks.
+- Row details: title, goal, expected deliverable, state, last reported time, and result or session links.
+- The page has text search, a screen-state filter, and a pin that sorts one group above the other open rows. It does not filter by badge.
+- Copyable text for local paths (rendered as plain text to copy, not clickable links).
+- Full preservation of Chinese text in task titles and goals.
+- Responsive layout readable on narrow mobile and desktop viewports.
+- Offline status indicator: when the browser loses network connection, the page displays an offline banner, retains the last snapshot, and avoids marking tasks failed.
 
-## Network Choice
+The web page never contains the authentication token.
 
-The default network bind is `127.0.0.1` port `8765`.
+## Setup and Installation
 
-An operator may set `AGENT_TASKBOARD_HOST=0.0.0.0` to make the dashboard accessible over a trusted local area network (LAN) or a Tailscale interface. That is not a public-internet default. Serving the read-only page on a trusted LAN is a conscious choice by the operator.
+Requirements: Python 3.12 and uv.
 
-## Configuration
-
-Configuration is loaded from environment variables. Copy the provided `.env.example` file:
-
-```bash
-cp .env.example .env
-```
-
-Do not commit `.env`.
-
-The service uses six environment variables:
-
-1. `AGENT_TASKBOARD_HOST`: Bind address. Default is `127.0.0.1`.
-2. `AGENT_TASKBOARD_PORT`: HTTP listen port. Default is `8765`.
-3. `AGENT_TASKBOARD_DB_PATH`: Database file path for the later storage phase. Default is `./data/agent_taskboard.sqlite3`.
-4. `AGENT_TASKBOARD_TOKEN`: Bearer token for write requests. Default placeholder is `replace-with-a-long-random-token`.
-5. `AGENT_TASKBOARD_CORS_ORIGINS`: Allowed browser origins. Default is empty, meaning no extra browser origins. Do not configure wildcard origins (`*`).
-6. `AGENT_TASKBOARD_ALLOWED_ARTIFACT_ROOTS`: Comma-separated directory paths for resolving opaque artifact identifiers in the later phase. Default is empty.
-
-## Setup and Start
-
-Run the following commands to install dependencies and start the service:
+Read the host `AGENTS.md` or `CLAUDE.md` and any routing file first. Clone https://github.com/grapeot/agent-taskboard to a persistent checkout, and point the host skill index at that checkout's `skills/agent-taskboard/SKILL.md`. Do not assume the host skills directory is this repository.
 
 ```bash
 uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e '.[dev]'
+cp .env.example .env
+```
+
+Replace `replace-with-a-long-random-token` in `.env` with a random value generated on that machine. Do not print the token or commit `.env`.
+
+```bash
 python -m agent_taskboard
 ```
 
-Run offline validation checks:
+Then read `http://127.0.0.1:8765/openapi.json`. `scripts/start.sh` only activates the checkout virtualenv and runs that module. It does not load `.env` itself. A process launcher can use the same command with the checkout as the working directory.
 
+## Configuration
+
+The service reads configuration from environment variables and from a `.env` file located in the working directory. Variables already set in the server environment are not overridden.
+
+The service refuses to start if `AGENT_TASKBOARD_TOKEN` is missing or still set to the placeholder `replace-with-a-long-random-token`. Do not put the token on a command line.
+
+### Environment Variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AGENT_TASKBOARD_HOST` | `127.0.0.1` | Network interface to bind. Use `0.0.0.0` for a trusted LAN or Tailscale. |
+| `AGENT_TASKBOARD_PORT` | `8765` | TCP port to listen on. An operator may set `8789` for LAN access. |
+| `AGENT_TASKBOARD_DB_PATH` | `./data/agent_taskboard.sqlite3` | Relative path to the SQLite database file. |
+| `AGENT_TASKBOARD_TOKEN` | *None* | Shared secret for HTTP Bearer authentication on write routes. |
+| `AGENT_TASKBOARD_CORS_ORIGINS` | *Empty* | Comma-separated list of explicit `http` or `https` origins. Never use `*`. |
+| `AGENT_TASKBOARD_ALLOWED_ARTIFACT_ROOTS` | *Empty* | Reserved and unused in this version. A local result is `copy_path` text, not a file-access check. |
+| `AGENT_TASKBOARD_STALE_AFTER_SECONDS` | `1800` | Inactivity threshold before an unaccepted task shows `Not updated`. |
+| `AGENT_TASKBOARD_ENV_FILE` | `.env` | Relative path to an environment file to load on startup. |
+
+Network notes:
+- Default bind is `127.0.0.1` port `8765`. Binding to `0.0.0.0` or port `8789` is a local configuration choice for trusted networks, not a public deployment.
+- CORS is empty by default unless explicit origins are configured.
+- The service does not download files. There is no artifact route.
+
+## API Overview
+
+Write routes require an `Authorization: Bearer <token>` header. Read routes are unauthenticated for local viewer access. OpenAPI documentation is served at `/openapi.json` and `/docs`.
+
+### Register a Task
+`PUT /tasks/job_example_alpha`
+
+Request body:
+```json
+{
+  "title": "Example notes for Alice",
+  "task": "Prepare a short example note. Do not include private material.",
+  "expected_deliverable": "A markdown note whose example link is https://example.com/results/alpha.",
+  "group_id": "group_example"
+}
+```
+
+- First call returns `201 Created`.
+- Repeating the exact same body returns `200 OK` and returns the current row, including any subsequent edits, without resetting task status.
+- Calling `PUT` with a different body for an existing id returns `409 Conflict` and leaves the stored row unchanged.
+
+### Report Progress
+`PATCH /tasks/job_example_alpha`
+
+Patches require `expected_revision` and `report_key`.
+- `report_key` is scoped to that task. The same payload returns the first receipt. A different payload needs a new key.
+- Introducing a new attempt identifier with the current revision makes it the active attempt.
+- Submitting an attempt identifier that is no longer active returns `409 Conflict`.
+- When an attempt is active, subsequent patches must name it.
+
+### Read Tasks
+- `GET /tasks/{task_id}`: Retrieves one task row by identifier.
+- `GET /tasks`: Lists rows. `count` is the number of returned rows. `counts` has `not_started`, `in_progress`, and `done`. Cancelled rows are omitted unless `include_cancelled=true`, and they stay outside those three counts. Filters are `group_id`, `status`, `ui_state`, and `q`.
+
+### Live Events
+- `GET /events`: Server-sent event stream emitting change hints. It is a change notification signal, not an audit log. The browser re-fetches `GET /tasks` on initial load, on reconnect, and after receiving a hint. Missed hints do not alter server state.
+
+### Error Format
+Errors return a standard JSON object containing `code` and `message`:
+- `401 unauthorized`: Missing or invalid Bearer token.
+- `404 not_found`: Requested task row does not exist.
+- `409 conflict` or `stale_attempt`: Revision mismatch or outdated attempt identifier. The current row state is included in the response.
+- `422 validation_error`: Malformed payload. The response describes the error without echoing submitted values.
+
+## Tests
+
+Run unit tests:
 ```bash
-python -m ruff check .
 python -m pytest
 ```
 
-Do not start the service as part of the test command.
+Run isolated server integration tests:
+```bash
+python -m pytest -m integration -o addopts=
+```
 
-## Handing to Coding Agents
-
-When handing the repository URL (`https://github.com/grapeot/agent-taskboard`) to Codex, Claude Code, Cursor, OpenCode, or another coding agent, instruct the agent to follow these steps:
-
-1. Read the host `AGENTS.md` or `CLAUDE.md` and any routing files such as `WORKSPACE.md` before modifying discovery files.
-2. If the host has `rules/skills/INDEX.md` or `skills/INDEX.md`, update that index with a reference to `skills/agent-taskboard/SKILL.md`. Otherwise add a short pointer in `AGENTS.md` or `CLAUDE.md`.
-3. Expose only `skills/agent-taskboard/SKILL.md`. Do not install a second global skill. A private host overlay is not in this repository and is added by the host later, if the host uses one.
-4. Keep the checkout and its `.venv`. Configure environment settings from `.env.example`, and do not commit `.env`.
-5. Start the API and inspect `/openapi.json` before submitting request payloads.
-
-## License
-
-This project is licensed under the terms of the MIT license.
+Do not start the service manually when running unit tests.

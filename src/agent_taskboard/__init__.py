@@ -1,2 +1,2 @@
-__version__ = "0.1.0"
-PHASE = "scaffold"
+__version__ = "0.2.0"
+PHASE = "ready"

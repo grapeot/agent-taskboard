@@ -2,227 +2,38 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>agent-taskboard</title>
-  <style>
-    :root {
-      --bg: #f8fafc;
-      --card-bg: #ffffff;
-      --text: #0f172a;
-      --muted: #64748b;
-      --border: #e2e8f0;
-      --state-not-started: #94a3b8;
-      --state-in-progress: #0284c7;
-      --state-done: #16a34a;
-      --badge-review: #d97706;
-      --badge-failed: #dc2626;
-      --badge-blocked: #9333ea;
-      --badge-stale: #475569;
-    }
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-      padding: 1rem;
-    }
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-    }
-    header {
-      margin-bottom: 1.5rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
-    }
-    h1 {
-      font-size: 1.5rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-    .banner {
-      background-color: #fffbeb;
-      border: 1px solid #fde68a;
-      color: #92400e;
-      padding: 0.75rem 1rem;
-      border-radius: 4px;
-      font-size: 0.9rem;
-      margin-bottom: 1.5rem;
-    }
-    .info-panel {
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1rem;
-      margin-bottom: 1.5rem;
-      font-size: 0.875rem;
-    }
-    .info-panel h2 {
-      font-size: 1rem;
-      margin-bottom: 0.5rem;
-    }
-    .info-panel p {
-      margin-bottom: 0.5rem;
-      color: var(--muted);
-    }
-    .legend {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      margin-top: 0.75rem;
-    }
-    .tag {
-      display: inline-block;
-      padding: 0.2rem 0.5rem;
-      border-radius: 3px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      border: 1px solid transparent;
-    }
-    .state-not-started { background: #f1f5f9; color: var(--state-not-started); border-color: #cbd5e1; }
-    .state-in-progress { background: #e0f2fe; color: var(--state-in-progress); border-color: #bae6fd; }
-    .state-done { background: #dcfce7; color: var(--state-done); border-color: #bbf7d0; }
-    .badge-review { background: #fef3c7; color: var(--badge-review); border-color: #fde68a; }
-    .badge-failed { background: #fee2e2; color: var(--badge-failed); border-color: #fecaca; }
-    .badge-blocked { background: #f3e8ff; color: var(--badge-blocked); border-color: #e9d5ff; }
-    .badge-stale { background: #f1f5f9; color: var(--badge-stale); border-color: #cbd5e1; }
-
-    .board {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
-    .section-title {
-      font-size: 1.1rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
-    }
-    .disclaimer {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-bottom: 1rem;
-    }
-    .task-card {
-      background: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-    }
-    .task-header {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 0.5rem;
-    }
-    .task-id {
-      font-family: monospace;
-      font-weight: 600;
-      font-size: 0.95rem;
-    }
-    .task-meta {
-      font-size: 0.8rem;
-      color: var(--muted);
-    }
-    .task-status-row {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .attempt-box {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 0.75rem;
-      font-size: 0.85rem;
-    }
-    .attempt-box h3 {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-bottom: 0.25rem;
-    }
-    .links-list {
-      list-style: none;
-      font-size: 0.85rem;
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-      margin-top: 0.5rem;
-    }
-    .links-list a {
-      color: #0284c7;
-      text-decoration: none;
-      word-break: break-all;
-    }
-    .links-list a:hover {
-      text-decoration: underline;
-    }
-  </style>
+  <link rel="stylesheet" href="/static/board.css">
 </head>
 <body>
-  <div class="container">
+  <div class="wrap">
     <header>
       <h1>agent-taskboard</h1>
-      <p>Local read-only task board placeholder</p>
+      <p class="lede">Goals, expected deliverables and latest progress.</p>
     </header>
-
-    <div class="banner">
-      This is a scaffold placeholder page. It does not show live tasks, connect to a database, or listen to an event stream. Stored tasks and live updates are not implemented in this build.
+    <p id="offline" class="banner">Connection lost. Showing the last snapshot.</p>
+    <div class="controls">
+      <label>Search <input id="search" type="search" placeholder="Search tasks, goals, deliverables, or groups"></label>
+      <label>Pin group <select id="pin"></select></label>
+      <label>State <select id="status-filter">
+        <option value="">All</option>
+        <option value="not_started">Not started</option>
+        <option value="in_progress">In progress</option>
+        <option value="done">Done</option>
+      </select></label>
     </div>
-
-    <div class="info-panel">
-      <h2>Read-Only Projection Rules</h2>
-      <p>Three screen states only: <strong>Not started</strong>, <strong>In progress</strong>, and <strong>Done</strong>. Done means accepted.</p>
-      <p>Badges on the last known state: <strong>Waiting for review</strong>, <strong>Failed</strong>, <strong>Blocked</strong>, and <strong>Stale</strong>. They are not a fourth screen state and they are not Done. Idle is not a status. A quiet process is not acceptance and is not failure.</p>
-      <p>Last reported time is displayed per task. A long gap means not updated; it does not mean done or failed.</p>
-      <div class="legend">
-        <span class="tag state-not-started">Not started</span>
-        <span class="tag state-in-progress">In progress</span>
-        <span class="tag state-done">Done</span>
-        <span class="tag badge-review">Waiting for review</span>
-        <span class="tag badge-failed">Failed</span>
-        <span class="tag badge-blocked">Blocked</span>
-        <span class="tag badge-stale">Stale</span>
-      </div>
-    </div>
-
-    <div class="board">
-      <div class="section-title">Example Layout</div>
-      <div class="disclaimer">Notice: The rows below are examples, not stored tasks.</div>
-
-      <div class="task-card">
-        <div class="task-header">
-          <span class="task-id">job_example_alpha</span>
-          <span class="task-meta">Example: Alice and Bob. Group: group_example</span>
-        </div>
-        <div class="task-status-row">
-          <span class="tag state-in-progress">In progress</span>
-          <span class="tag badge-review">Waiting for review</span>
-          <span class="tag badge-blocked">Blocked</span>
-        </div>
-        <div class="task-meta">
-          Last reported: 2026-10-07 21:00 UTC (a long gap means not updated, not done or failed)
-        </div>
-        <div class="attempt-box">
-          <h3>Folded Attempt (attempt_example_1)</h3>
-          <p>Report key: report_example_1</p>
-          <ul class="links-list">
-            <li>Result link: <a href="https://example.com/results/alpha">https://example.com/results/alpha</a></li>
-            <li>Session link: <a href="opencode://session/ses_example">opencode://session/ses_example</a></li>
-            <li>Note path: notes/example.md</li>
-          </ul>
-        </div>
-      </div>
-    </div>
+    <p id="counts" class="meta"></p>
+    <section>
+      <h2>Open tasks</h2>
+      <p id="empty" class="empty" hidden>No tasks matching the selected filters.</p>
+      <div id="open-list"></div>
+    </section>
+    <details>
+      <summary>Done</summary>
+      <div id="done-list"></div>
+    </details>
   </div>
+  <script src="/static/board.js"></script>
 </body>
 </html>

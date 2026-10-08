@@ -6,7 +6,6 @@ EXPECTED_PATHS = {
     "/tasks",
     "/tasks/{task_id}",
     "/events",
-    "/artifacts/{artifact_id}",
 }
 
 
@@ -22,7 +21,7 @@ def _operations(schema: dict) -> list[tuple[str, str, dict]]:
 def test_openapi_routes_are_described(client):
     schema = client.get("/openapi.json").json()
     assert set(schema["paths"]) == EXPECTED_PATHS
-    assert "scaffold" in schema["info"]["description"].lower()
+    assert "openapi" in schema["info"]["description"].lower()
     missing = []
     for path, method, operation in _operations(schema):
         if not operation.get("summary"):

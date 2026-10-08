@@ -35,3 +35,10 @@ run/
 *.pid
 .local/
 output/
+screenshots/
+payloads/
+runtime/
+test-artifacts/
+*.har
+task_snapshot.json
+task_snapshot/
